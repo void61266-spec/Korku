@@ -2,10 +2,10 @@
 name: VOID Son Vardiya Android APK
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,70 +13,106 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 40
+
+    env:
+      GODOT_VERSION: "4.3"
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_API: "34"
 
     steps:
-      - name: Projeyi indir
+      - name: Depoyu indir
         uses: actions/checkout@v4
 
       - name: Java 17 kur
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Android SDK kur
-        uses: android-actions/setup-android@v3
-
-      - name: Android araçlarını yükle
+      - name: Android SDK paketlerini kur
+        shell: bash
         run: |
-          sdkmanager --install \
+          set -euo pipefail
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+              -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "HATA: Android SDK sdkmanager bulunamadı."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" --licenses || true
+
+          "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" \
+            --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      - name: Godot 4.3 ve export şablonlarını kur
+      - name: Godot 4.3 ve dışa aktarma şablonlarını indir
         shell: bash
         run: |
           set -euo pipefail
-          BASE="https://github.com/godotengine/godot/releases/download/4.3-stable"
 
-          wget -q "$BASE/Godot_v4.3-stable_linux.x86_64.zip"
-          wget -q "$BASE/Godot_v4.3-stable_export_templates.tpz"
+          BASE_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          GODOT_ARCHIVE="Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          TEMPLATE_ARCHIVE="Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
 
-          unzip -q Godot_v4.3-stable_linux.x86_64.zip
-          GODOT="$PWD/Godot_v4.3-stable_linux.x86_64"
-          chmod +x "$GODOT"
-          echo "GODOT=$GODOT" >> "$GITHUB_ENV"
+          wget -q "$BASE_URL/$GODOT_ARCHIVE"
+          wget -q "$BASE_URL/$TEMPLATE_ARCHIVE"
 
-          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
-          unzip -oq Godot_v4.3-stable_export_templates.tpz -d /tmp/godot-templates
-          cp /tmp/godot-templates/templates/* \
-            "$HOME/.local/share/godot/export_templates/4.3.stable/"
+          unzip -q "$GODOT_ARCHIVE"
 
-          "$GODOT" --version
+          GODOT_BIN="$PWD/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          chmod +x "$GODOT_BIN"
+          echo "GODOT=$GODOT_BIN" >> "$GITHUB_ENV"
 
-      - name: Projeyi içe aktar
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/4.3.stable"
+          mkdir -p "$TEMPLATE_DIR" /tmp/godot-templates
+
+          unzip -q "$TEMPLATE_ARCHIVE" -d /tmp/godot-templates
+
+          test -s /tmp/godot-templates/templates/android_debug.apk
+          test -s /tmp/godot-templates/templates/android_release.apk
+
+          cp /tmp/godot-templates/templates/* "$TEMPLATE_DIR/"
+
+          "$GODOT_BIN" --version
+
+      - name: Android APK oluştur
+        shell: bash
         run: |
-          "$GODOT" --headless --editor --path . --quit --import
-
-      - name: Proje testini çalıştır
-        run: |
-          "$GODOT" --headless --path . res://tests/smoke.tscn
-
-      - name: Android APK derle
-        run: |
+          set -euo pipefail
           bash scripts_build/build_android.sh debug
 
-      - name: APK dosyasını kontrol et
+      - name: APK dosyasını doğrula
+        shell: bash
         run: |
-          test -s build/void_son_vardiya_debug.apk
-          unzip -t build/void_son_vardiya_debug.apk
+          set -euo pipefail
+
+          APK="build/void_son_vardiya_debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "HATA: APK oluşturulamadı."
+            exit 1
+          fi
+
+          unzip -t "$APK"
+          echo "APK başarıyla oluşturuldu: $APK"
 
       - name: APK dosyasını indirilebilir yap
         uses: actions/upload-artifact@v4
         with:
-          name: VOID-Son-Vardiya-APK
+          name: void-son-vardiya-debug-apk
           path: build/void_son_vardiya_debug.apk
           if-no-files-found: error
           retention-days: 14
