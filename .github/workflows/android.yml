@@ -1,0 +1,82 @@
+
+name: VOID Son Vardiya Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Projeyi indir
+        uses: actions/checkout@v4
+
+      - name: Java 17 kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK kur
+        uses: android-actions/setup-android@v3
+
+      - name: Android araçlarını yükle
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Godot 4.3 ve export şablonlarını kur
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/4.3-stable"
+
+          wget -q "$BASE/Godot_v4.3-stable_linux.x86_64.zip"
+          wget -q "$BASE/Godot_v4.3-stable_export_templates.tpz"
+
+          unzip -q Godot_v4.3-stable_linux.x86_64.zip
+          GODOT="$PWD/Godot_v4.3-stable_linux.x86_64"
+          chmod +x "$GODOT"
+          echo "GODOT=$GODOT" >> "$GITHUB_ENV"
+
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
+          unzip -oq Godot_v4.3-stable_export_templates.tpz -d /tmp/godot-templates
+          cp /tmp/godot-templates/templates/* \
+            "$HOME/.local/share/godot/export_templates/4.3.stable/"
+
+          "$GODOT" --version
+
+      - name: Projeyi içe aktar
+        run: |
+          "$GODOT" --headless --editor --path . --quit --import
+
+      - name: Proje testini çalıştır
+        run: |
+          "$GODOT" --headless --path . res://tests/smoke.tscn
+
+      - name: Android APK derle
+        run: |
+          bash scripts_build/build_android.sh debug
+
+      - name: APK dosyasını kontrol et
+        run: |
+          test -s build/void_son_vardiya_debug.apk
+          unzip -t build/void_son_vardiya_debug.apk
+
+      - name: APK dosyasını indirilebilir yap
+        uses: actions/upload-artifact@v4
+        with:
+          name: VOID-Son-Vardiya-APK
+          path: build/void_son_vardiya_debug.apk
+          if-no-files-found: error
+          retention-days: 14
