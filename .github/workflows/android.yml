@@ -1,146 +1,93 @@
 name: NIGHTFALL Android APK
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
+workflow_dispatch:
+push:
+branches: [main]
 
 permissions:
-  contents: read
+contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
+build:
+runs-on: ubuntu-22.04
+timeout-minutes: 45
 
-    env:
-      GODOT_VERSION: "4.3"
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+env:
+  GODOT_VERSION: "4.3"
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
-    steps:
-      - name: Depoyu indir
-        uses: actions/checkout@v4
+steps:
+  - name: Depoyu indir
+    uses: actions/checkout@v4
 
-      - name: Java kur
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+  - name: Java 17 kur
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: "17"
 
-      - name: ZIP dosyasını aç
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y unzip wget
+  - name: Android SDK hazırla
+    uses: android-actions/setup-android@v3
 
-          ZIP_FILE="$(find . -maxdepth 3 -type f -iname '*.zip' \
-            ! -name 'Godot_*' -print -quit)"
+  - name: Android paketlerini yükle
+    run: |
+      sdkmanager --install \
+        "platform-tools" \
+        "platforms;android-34" \
+        "build-tools;34.0.0"
+      yes | sdkmanager --licenses || true
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "HATA: Oyun ZIP dosyası bulunamadı."
-            exit 1
-          fi
+  - name: Godot 4.3 kur
+    shell: bash
+    run: |
+      set -e
+      BASE="https://github.com/godotengine/godot/releases/download/4.3-stable"
+      wget -q "$BASE/Godot_v4.3-stable_linux.x86_64.zip"
+      wget -q "$BASE/Godot_v4.3-stable_export_templates.tpz"
+      unzip -q Godot_v4.3-stable_linux.x86_64.zip
+      chmod +x Godot_v4.3-stable_linux.x86_64
+      echo "GODOT=$PWD/Godot_v4.3-stable_linux.x86_64" >> "$GITHUB_ENV"
+      mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
+      mkdir -p /tmp/godot-templates
+      unzip -q Godot_v4.3-stable_export_templates.tpz -d /tmp/godot-templates
+      cp /tmp/godot-templates/templates/* \
+        "$HOME/.local/share/godot/export_templates/4.3.stable/"
 
-          mkdir -p "$RUNNER_TEMP/game"
-          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/game"
+  - name: Proje klasörünü bul
+    shell: bash
+    run: |
+      set -e
+      PROJECT_FILE="$(find . -name project.godot -not -path '*/.godot/*' -print -quit)"
+      if [ -z "$PROJECT_FILE" ]; then
+        echo "HATA: project.godot bulunamadı."
+        exit 1
+      fi
+      echo "PROJECT_DIR=$(dirname "$PROJECT_FILE")" >> "$GITHUB_ENV"
 
-          PROJECT_FILE="$(find "$RUNNER_TEMP/game" \
-            -type f -name project.godot -print -quit)"
+  - name: Godot kaynaklarını içe aktar
+    run: |
+      "$GODOT" --headless --editor \
+        --path "$PROJECT_DIR" --quit --import
 
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "HATA: ZIP içinde project.godot yok."
-            exit 1
-          fi
+  - name: Android APK oluştur
+    shell: bash
+    run: |
+      set -e
+      cd "$PROJECT_DIR"
+      mkdir -p build
+      "$GODOT" --headless --editor --path . --quit
+      "$GODOT" --headless --path . \
+        --export-debug "Android Debug" \
+        build/NIGHTFALL_Son_Vardiya.apk
+      test -s build/NIGHTFALL_Son_Vardiya.apk
+      unzip -t build/NIGHTFALL_Son_Vardiya.apk
 
-          echo "PROJECT_DIR=$(dirname "$PROJECT_FILE")" >> "$GITHUB_ENV"
-
-      - name: Android SDK hazırla
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager | sort -V | tail -n 1)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "HATA: sdkmanager bulunamadı."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" --licenses || true
-
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"
-
-      - name: Godot indir ve şablonları kur
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
-
-          wget -q "$URL/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
-          wget -q "$URL/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-
-          unzip -q "Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
-
-          GODOT="$PWD/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
-          chmod +x "$GODOT"
-          echo "GODOT=$GODOT" >> "$GITHUB_ENV"
-
-          TMP="$RUNNER_TEMP/templates"
-          DEST="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
-
-          mkdir -p "$TMP" "$DEST"
-          unzip -q "Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -d "$TMP"
-          cp "$TMP/templates/"* "$DEST/"
-
-          test -s "$DEST/android_debug.apk"
-
-      - name: Android APK derle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -f "$PROJECT_DIR/export_presets.cfg" || {
-            echo "HATA: export_presets.cfg bulunamadı."
-            exit 1
-          }
-
-          mkdir -p "$HOME/.config/godot"
-
-          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
-          [gd_resource type="EditorSettings" format=3]
-
-          [resource]
-          export/android/android_sdk_path = "$ANDROID_HOME"
-          export/android/java_sdk_path = "$JAVA_HOME"
-          EOF
-
-          "$GODOT" --headless --editor \
-            --path "$PROJECT_DIR" --import
-
-          PRESET="$("$GODOT" --headless --path "$PROJECT_DIR" \
-            --editor --quit 2>&1 || true)"
-
-          mkdir -p "$PROJECT_DIR/build"
-
-          "$GODOT" --headless --path "$PROJECT_DIR" \
-            --export-debug "Android Debug" \
-            "$PROJECT_DIR/build/NIGHTFALL.apk"
-
-          test -s "$PROJECT_DIR/build/NIGHTFALL.apk"
-          echo "APK başarıyla oluşturuldu."
-
-      - name: APK dosyasını indirilebilir yap
-        uses: actions/upload-artifact@v4
-        with:
-          name: NIGHTFALL-Android-APK
-          path: ${{ env.PROJECT_DIR }}/build/NIGHTFALL.apk
-          if-no-files-found: error
-          retention-days: 14
+  - name: APK dosyasını sun
+    uses: actions/upload-artifact@v4
+    with:
+      name: NIGHTFALL-SON-VARDIYA-APK
+      path: ${{ env.PROJECT_DIR }}/build/NIGHTFALL_Son_Vardiya.apk
+      if-no-files-found: error
+      retention-days: 14
