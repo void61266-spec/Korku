@@ -1,93 +1,144 @@
-name: NIGHTFALL Android APK
+name: NIGHTFALL Release APK
 
 on:
-workflow_dispatch:
-push:
-branches: [main]
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'nightfall_optimize.zip'
+      - '.github/workflows/nightfall_release.yml'
 
 permissions:
-contents: read
+  contents: read
 
 jobs:
-build:
-runs-on: ubuntu-22.04
-timeout-minutes: 45
+  build-release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      GODOT_VERSION: 4.3
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
-env:
-  GODOT_VERSION: "4.3"
-  ANDROID_HOME: /usr/local/lib/android/sdk
-  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-steps:
-  - name: Depoyu indir
-    uses: actions/checkout@v4
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-  - name: Java 17 kur
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: "17"
+      - name: Install Android SDK packages
+        uses: android-actions/setup-android@v3
 
-  - name: Android SDK hazırla
-    uses: android-actions/setup-android@v3
+      - name: Accept licenses and install SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            'platform-tools' \
+            'platforms;android-34' \
+            'build-tools;34.0.0'
 
-  - name: Android paketlerini yükle
-    run: |
-      sdkmanager --install \
-        "platform-tools" \
-        "platforms;android-34" \
-        "build-tools;34.0.0"
-      yes | sdkmanager --licenses || true
+      - name: Extract project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f nightfall_optimize.zip ]; then
+            echo 'ERROR: Put nightfall_optimize.zip in the repository root.'
+            exit 1
+          fi
+          mkdir -p extracted
+          unzip -q nightfall_optimize.zip -d extracted
+          PROJECT_FILE="$(find extracted -name project.godot -not -path '*/.godot/*' -print -quit)"
+          if [ -z "$PROJECT_FILE" ]; then
+            echo 'ERROR: project.godot was not found in the ZIP.'
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$PROJECT_FILE")" >> "$GITHUB_ENV"
 
-  - name: Godot 4.3 kur
-    shell: bash
-    run: |
-      set -e
-      BASE="https://github.com/godotengine/godot/releases/download/4.3-stable"
-      wget -q "$BASE/Godot_v4.3-stable_linux.x86_64.zip"
-      wget -q "$BASE/Godot_v4.3-stable_export_templates.tpz"
-      unzip -q Godot_v4.3-stable_linux.x86_64.zip
-      chmod +x Godot_v4.3-stable_linux.x86_64
-      echo "GODOT=$PWD/Godot_v4.3-stable_linux.x86_64" >> "$GITHUB_ENV"
-      mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
-      mkdir -p /tmp/godot-templates
-      unzip -q Godot_v4.3-stable_export_templates.tpz -d /tmp/godot-templates
-      cp /tmp/godot-templates/templates/* \
-        "$HOME/.local/share/godot/export_templates/4.3.stable/"
+      - name: Download Godot and Android export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          wget -q "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          wget -q "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          chmod +x "Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          echo "GODOT=$PWD/Godot_v${GODOT_VERSION}-stable_linux.x86_64" >> "$GITHUB_ENV"
+          mkdir -p /tmp/godot-templates "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -d /tmp/godot-templates
+          cp /tmp/godot-templates/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
 
-  - name: Proje klasörünü bul
-    shell: bash
-    run: |
-      set -e
-      PROJECT_FILE="$(find . -name project.godot -not -path '*/.godot/*' -print -quit)"
-      if [ -z "$PROJECT_FILE" ]; then
-        echo "HATA: project.godot bulunamadı."
-        exit 1
-      fi
-      echo "PROJECT_DIR=$(dirname "$PROJECT_FILE")" >> "$GITHUB_ENV"
+      - name: Configure Android export and temporary signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v \
+            -keystore "$PROJECT_DIR/release.keystore" \
+            -storepass NightfallTemp2026 \
+            -alias nightfall \
+            -keypass NightfallTemp2026 \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=NIGHTFALL Temporary, OU=Build, O=Nightfall, L=Ordu, ST=Ordu, C=TR'
+          python3 - "$PROJECT_DIR/export_presets.cfg" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          if not p.exists():
+              raise SystemExit('ERROR: export_presets.cfg not found.')
+          s = p.read_text(encoding='utf-8')
+          marker = 'name="Android Release"'
+          i = s.find(marker)
+          if i < 0:
+              raise SystemExit('ERROR: Android Release preset not found in export_presets.cfg.')
+          j = s.find('\n[preset.', i + len(marker))
+          if j < 0:
+              j = len(s)
+          block = s[i:j]
+          replacements = {
+              'keystore/release=""': 'keystore/release="release.keystore"',
+              'keystore/release_user=""': 'keystore/release_user="nightfall"',
+              'keystore/release_password=""': 'keystore/release_password="NightfallTemp2026"',
+          }
+          for old, new in replacements.items():
+              if old not in block:
+                  raise SystemExit(f'ERROR: expected setting missing: {old}')
+              block = block.replace(old, new, 1)
+          s = s[:i] + block + s[j:]
+          p.write_text(s, encoding='utf-8')
+          PY
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          EOF
 
-  - name: Godot kaynaklarını içe aktar
-    run: |
-      "$GODOT" --headless --editor \
-        --path "$PROJECT_DIR" --quit --import
+      - name: Import project resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$GODOT" --headless --editor --path "$PROJECT_DIR" --quit --import
 
-  - name: Android APK oluştur
-    shell: bash
-    run: |
-      set -e
-      cd "$PROJECT_DIR"
-      mkdir -p build
-      "$GODOT" --headless --editor --path . --quit
-      "$GODOT" --headless --path . \
-        --export-debug "Android Debug" \
-        build/NIGHTFALL_Son_Vardiya.apk
-      test -s build/NIGHTFALL_Son_Vardiya.apk
-      unzip -t build/NIGHTFALL_Son_Vardiya.apk
+      - name: Export signed Release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROJECT_DIR/build"
+          "$GODOT" --headless --path "$PROJECT_DIR" \
+            --export-release 'Android Release' \
+            "$PROJECT_DIR/build/NIGHTFALL_Son_Vardiya_release.apk"
+          test -s "$PROJECT_DIR/build/NIGHTFALL_Son_Vardiya_release.apk"
+          unzip -t "$PROJECT_DIR/build/NIGHTFALL_Son_Vardiya_release.apk"
 
-  - name: APK dosyasını sun
-    uses: actions/upload-artifact@v4
-    with:
-      name: NIGHTFALL-SON-VARDIYA-APK
-      path: ${{ env.PROJECT_DIR }}/build/NIGHTFALL_Son_Vardiya.apk
-      if-no-files-found: error
-      retention-days: 14
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NIGHTFALL-SON-VARDIYA-RELEASE-APK
+          path: ${{ env.PROJECT_DIR }}/build/NIGHTFALL_Son_Vardiya_release.apk
+          if-no-files-found: error
+          retention-days: 14
